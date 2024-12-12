@@ -11,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 
-use crate::msg;
+use crate::msg::{self, EXTENSION};
 use anyhow::Error;
 
 use super::msg::{REQUEST_IDENTITIES, SIGN_REQUEST};
@@ -166,7 +166,7 @@ impl<
                     writebuf.push(msg::FAILURE)
                 }
             }
-            Ok(_EXTENSION) => {
+            Ok(EXTENSION) => {
                 let extension_name = r.read_string()?;
                 let extension_name = String::from_utf8(extension_name.to_vec())
                     .map_err(|_| SSHAgentError::AgentFailure)?;
