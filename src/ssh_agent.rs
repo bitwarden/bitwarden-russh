@@ -176,8 +176,7 @@ impl<
                     let _hostkey = r.read_string()?;
                     let _session_identifier = r.read_string()?;
                     let _signature = r.read_string()?;
-                    let is_forwarding = r.read_byte()?;
-                    let is_forwarding = is_forwarding == 1;
+                    let is_forwarding = r.read_byte()? == 1;
                     let agent = self.agent.take().ok_or(SSHAgentError::AgentFailure)?;
                     agent
                         .set_is_forwarding(is_forwarding, &self.connection_info)
