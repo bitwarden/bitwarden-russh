@@ -1,7 +1,8 @@
 /*
     These constants come from:
 
-    https://github.com/openssh/openssh-portable/blob/master/authfd.h
+    5.1. Message numbers
+    https://datatracker.ietf.org/doc/draft-ietf-sshm-ssh-agent
 */
 
 pub const FAILURE: u8 = 5;
