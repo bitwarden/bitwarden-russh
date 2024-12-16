@@ -1,3 +1,9 @@
+/*
+    These constants come from:
+
+    https://github.com/openssh/openssh-portable/blob/master/authfd.h
+*/
+
 pub const FAILURE: u8 = 5;
 pub const SUCCESS: u8 = 6;
 pub const IDENTITIES_ANSWER: u8 = 12;
