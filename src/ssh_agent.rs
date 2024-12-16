@@ -212,9 +212,7 @@ impl<
 
         let data = r.read_string()?;
 
-        let ok = agent
-            .confirm(key.clone(), data, &self.connection_info)
-            .await;
+        let ok = agent.confirm(key, data, &self.connection_info).await;
         if !ok {
             return Ok((agent, false));
         }
