@@ -18,15 +18,14 @@ use super::msg::{REQUEST_IDENTITIES, SIGN_REQUEST};
 use std::result::Result;
 
 #[derive(Clone)]
-pub struct Key {
-    pub private_key: Option<ssh_key::private::PrivateKey>,
-    pub name: String,
-    pub cipher_uuid: String,
-}
-
-#[derive(Clone)]
 #[allow(clippy::type_complexity)]
-pub struct KeyStore(pub Arc<RwLock<HashMap<Vec<u8>, Key>>>);
+pub struct KeyStore<Key>(pub Arc<RwLock<HashMap<Vec<u8>, Key>>>);
+
+pub trait SshKey {
+    fn name(&self) -> &str;
+    fn public_key_bytes(&self) -> Vec<u8>;
+    fn private_key(&self) -> Option<Box<dyn SigningKey>>;
+}
 
 #[allow(missing_docs)]
 #[derive(Debug)]
@@ -35,10 +34,10 @@ pub enum ServerError<E> {
     Error(Error),
 }
 
-pub trait Agent<I>: Clone + Send + 'static {
+pub trait Agent<I, K>: Clone + Send + 'static {
     fn confirm(
         &self,
-        _pk: Key,
+        _pk: K,
         _data: &[u8],
         _connection_info: &I,
     ) -> impl std::future::Future<Output = bool> + Send {
@@ -58,17 +57,18 @@ pub trait Agent<I>: Clone + Send + 'static {
     }
 }
 
-pub async fn serve<S, L, A, I>(
+pub async fn serve<S, L, A, I, K>(
     mut listener: L,
     agent: A,
-    keys: KeyStore,
+    keys: KeyStore<K>,
     cancellation_token: CancellationToken,
 ) -> Result<(), Error>
 where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     L: Stream<Item = tokio::io::Result<(S, I)>> + Unpin,
-    A: Agent<I> + Send + Sync + 'static,
+    A: Agent<I, K> + Send + Sync + 'static,
     I: Send + Sync + 'static,
+    K: SshKey + Send + Sync + Clone + 'static,
 {
     loop {
         select! {
@@ -99,8 +99,8 @@ where
     Ok(())
 }
 
-struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I>, I> {
-    keys: KeyStore,
+struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I, K>, I, K> {
+    keys: KeyStore<K>,
     agent: Option<A>,
     s: S,
     buf: CryptoVec,
@@ -109,9 +109,10 @@ struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I>, I> {
 
 impl<
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        A: Agent<I> + Send + Sync + 'static,
+        A: Agent<I, K> + Send + Sync + 'static,
         I,
-    > Connection<S, A, I>
+        K: SshKey + Send + Sync + Clone + 'static,
+    > Connection<S, A, I, K>
 {
     async fn run(mut self) -> Result<(), Error> {
         let mut writebuf = CryptoVec::new();
@@ -149,7 +150,7 @@ impl<
                     writebuf.push_u32_be(keys.len() as u32);
                     for (public_key_bytes, key) in keys.iter() {
                         writebuf.extend_ssh_string(public_key_bytes);
-                        writebuf.extend_ssh_string(key.name.as_bytes());
+                        writebuf.extend_ssh_string(key.name().as_bytes());
                     }
                 } else {
                     writebuf.push(msg::FAILURE)
@@ -226,15 +227,15 @@ impl<
             }
         };
 
-        match key.private_key {
+        match key.private_key() {
             Some(private_key) => {
                 writebuf.push(msg::SIGN_RESPONSE);
-                let signer: &dyn SigningKey = &private_key;
-                let sig = signer.try_sign(data).or(Err(SSHAgentError::AgentFailure));
+                let sig = private_key
+                    .try_sign(data)
+                    .or(Err(SSHAgentError::AgentFailure));
                 let sig = match sig {
                     Ok(sig) => sig,
-                    Err(err) => {
-                        println!("Error signing: {:?}", err);
+                    Err(_) => {
                         writebuf.push(msg::FAILURE);
                         return Ok((agent, false));
                     }
