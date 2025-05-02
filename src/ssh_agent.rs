@@ -187,8 +187,9 @@ impl<
                         } else {
                             writebuf.push(msg::FAILURE);
                         }
+                    } else {
+                        writebuf.push(msg::SUCCESS);
                     }
-                    writebuf.push(msg::SUCCESS);
                 } else {
                     writebuf.push(msg::FAILURE);
                 }
