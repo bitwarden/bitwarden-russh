@@ -3,13 +3,11 @@ use std::marker::Sync;
 use std::sync::{Arc, RwLock};
 
 use crate::encoding::{Encoding, Position, Reader};
+use crate::session_bind::SessionBindResult;
 use byteorder::{BigEndian, ByteOrder};
 use futures::stream::{Stream, StreamExt};
-use rsa::sha2::Digest;
-use rsa::{sha2, BigUint, Pkcs1v15Sign};
 use russh_cryptovec::CryptoVec;
-use ssh_key::public::{EcdsaPublicKey, Ed25519PublicKey, KeyData, RsaPublicKey};
-use ssh_key::{EcdsaCurve, HashAlg, SigningKey};
+use ssh_key::{HashAlg, SigningKey};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -38,7 +36,7 @@ pub enum ServerError<E> {
     Error(Error),
 }
 
-pub trait Agent<I>: Clone + Send + 'static {
+pub trait Agent<I: Clone>: Clone + Send + 'static {
     fn confirm(
         &self,
         _pk: Key,
@@ -54,9 +52,7 @@ pub trait Agent<I>: Clone + Send + 'static {
 
     fn set_sessionbind_info(
         &self,
-        _is_forwarding: bool,
-        _hostkey: &[u8],
-        _session_identifier: &[u8],
+        _session_bind_info: &SessionBindResult,
         _connection_info: &I,
     ) -> impl std::future::Future<Output = ()> + Send {
         async {}
@@ -73,7 +69,7 @@ where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     L: Stream<Item = tokio::io::Result<(S, I)>> + Unpin,
     A: Agent<I> + Send + Sync + 'static,
-    I: Send + Sync + 'static,
+    I: Clone + Send + Sync + 'static,
 {
     loop {
         select! {
@@ -92,7 +88,7 @@ where
                         agent: Some(agent),
                         s: stream,
                         buf: CryptoVec::new(),
-                        connection_info: info,
+                        connection_info: info.clone(),
                     }
                     .run()
                     .await;
@@ -104,7 +100,7 @@ where
     Ok(())
 }
 
-struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I>, I> {
+struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I>, I: Clone> {
     keys: KeyStore,
     agent: Option<A>,
     s: S,
@@ -115,7 +111,7 @@ struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I>, I> {
 impl<
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
         A: Agent<I> + Send + Sync + 'static,
-        I,
+        I: Clone,
     > Connection<S, A, I>
 {
     async fn run(mut self) -> Result<(), Error> {
@@ -178,48 +174,20 @@ impl<
 
                 // https://raw.githubusercontent.com/openssh/openssh-portable/refs/heads/master/PROTOCOL.agent
                 if extension_name == "session-bind@openssh.com" {
-                    let hostkey_bytes = r.read_string()?;
-                    let hostkey = ssh_key::PublicKey::from_bytes(&hostkey_bytes)
-                        .map_err(|_| SSHAgentError::AgentFailure)?;
-                    let session_identifier = r.read_string()?;
-
-                    let signature_bytes = r.read_string()?;
-                    let binding = CryptoVec::from_slice(&signature_bytes);
-                    let mut signature = binding.reader(0);
-                    let alg = String::from_utf8(signature.read_string()?.to_vec())
-                        .map_err(|_| SSHAgentError::AgentFailure)?;
-                    let signature = signature.read_string()?.to_vec();
-
-                    let is_forwarding = r.read_byte()? == 1;
-
-                    let signature_verification = match hostkey.key_data() {
-                        KeyData::Ed25519(key) => {
-                            verify_ed25519_signature(key, &signature, alg, session_identifier)
-                        }
-                        KeyData::Rsa(key) => {
-                            verify_rsa_signature(key, &signature, alg, session_identifier)
-                        }
-                        KeyData::Ecdsa(key) => {
-                            verify_ecdsa_signature(key, &signature, alg, session_identifier)
-                        }
-                        _ => Ok(()),
-                    };
-                    println!("signature_verification {:?}", signature_verification);
-                    if !signature_verification.is_ok() {
-                        writebuf.push(msg::FAILURE);
-                        return Ok(());
-                    }
-
-                    let agent = self.agent.take().ok_or(SSHAgentError::AgentFailure)?;
-                    agent
-                        .set_sessionbind_info(
-                            is_forwarding,
-                            hostkey_bytes,
-                            session_identifier,
-                            &self.connection_info,
+                    if let Some(agent) = self.agent.as_mut() {
+                        if crate::session_bind::respond_extension_session_bind(
+                            agent,
+                            &mut r,
+                            self.connection_info.clone(),
                         )
-                        .await;
-                    self.agent = Some(agent);
+                        .await
+                        .is_ok()
+                        {
+                            writebuf.push(msg::SUCCESS);
+                        } else {
+                            writebuf.push(msg::FAILURE);
+                        }
+                    }
                     writebuf.push(msg::SUCCESS);
                 } else {
                     writebuf.push(msg::FAILURE);
@@ -315,93 +283,6 @@ impl<
 pub enum SSHAgentError {
     #[error("Agent failure")]
     AgentFailure,
-}
-
-fn verify_ed25519_signature(
-    key: &Ed25519PublicKey,
-    signature: &[u8],
-    _alg: String,
-    session_identifier: &[u8],
-) -> Result<(), Error> {
-    ed25519_dalek::VerifyingKey::from_bytes(&key.0)?
-        .verify_strict(
-            session_identifier,
-            &ed25519_dalek::Signature::from_slice(signature)?,
-        )
-        .map_err(Into::into)
-}
-
-fn verify_rsa_signature(
-    key: &RsaPublicKey,
-    signature: &[u8],
-    alg: String,
-    session_identifier: &[u8],
-) -> Result<(), Error> {
-    let n = key
-        .n
-        .as_positive_bytes()
-        .map(BigUint::from_bytes_be)
-        .ok_or(anyhow::anyhow!("Failed to parse RSA modulus"))?;
-    let e = key
-        .e
-        .as_positive_bytes()
-        .map(BigUint::from_bytes_be)
-        .ok_or(anyhow::anyhow!("Failed to parse RSA exponent"))?;
-    let verifying_key = rsa::RsaPublicKey::new(n, e)?;
-    if alg == "rsa-sha2-256" {
-        verifying_key
-            .verify(
-                Pkcs1v15Sign::new::<sha2::Sha256>(),
-                sha2::Sha256::digest(session_identifier).as_slice(),
-                &signature,
-            )
-            .map_err(Into::into)
-    } else if alg == "rsa-sha2-512" {
-        verifying_key
-            .verify(
-                Pkcs1v15Sign::new::<sha2::Sha512>(),
-                sha2::Sha512::digest(session_identifier).as_slice(),
-                &signature,
-            )
-            .map_err(Into::into)
-    } else {
-        Err(SSHAgentError::AgentFailure.into())
-    }
-}
-
-fn verify_ecdsa_signature(
-    key: &EcdsaPublicKey,
-    signature: &[u8],
-    _alg: String,
-    session_identifier: &[u8],
-) -> Result<(), Error> {
-    match key.curve() {
-        EcdsaCurve::NistP256 => {
-            use p256::ecdsa::signature::Verifier;
-            p256::ecdsa::VerifyingKey::from_sec1_bytes(key.as_sec1_bytes())?
-                .verify(
-                    session_identifier,
-                    &p256::ecdsa::Signature::from_slice(signature)?,
-                )
-                .map_err(Into::into)
-        }
-        EcdsaCurve::NistP384 => {
-            use p384::ecdsa::signature::Verifier;
-            p384::ecdsa::VerifyingKey::from_sec1_bytes(key.as_sec1_bytes())?
-                .verify(
-                    session_identifier,
-                    &p384::ecdsa::Signature::from_slice(signature)?,
-                )
-                .map_err(Into::into)
-        }
-        EcdsaCurve::NistP521 => {
-            use p521::ecdsa::signature::Verifier;
-            p521::ecdsa::VerifyingKey::from_sec1_bytes(key.as_sec1_bytes())?
-                .verify(
-                    session_identifier,
-                    &p521::ecdsa::Signature::from_slice(signature)?,
-                )
-                .map_err(Into::into)
-        }
-    }
+    #[error("Signature verification failed")]
+    SignatureVerificationFailed,
 }
