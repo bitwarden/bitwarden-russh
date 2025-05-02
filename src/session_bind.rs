@@ -7,7 +7,8 @@ use crate::{
 };
 use anyhow::Error;
 use rsa::{
-    sha2::{self, Digest}, BigUint, Pkcs1v15Sign,
+    sha2::{self, Digest},
+    BigUint, Pkcs1v15Sign,
 };
 use russh_cryptovec::CryptoVec;
 use ssh_key::{
