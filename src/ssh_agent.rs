@@ -3,6 +3,7 @@ use std::marker::Sync;
 use std::sync::{Arc, RwLock};
 
 use crate::encoding::{Encoding, Position, Reader};
+use crate::session_bind::SessionBindResult;
 use byteorder::{BigEndian, ByteOrder};
 use futures::stream::{Stream, StreamExt};
 use russh_cryptovec::CryptoVec;
@@ -34,7 +35,7 @@ pub enum ServerError<E> {
     Error(Error),
 }
 
-pub trait Agent<I, K>: Clone + Send + 'static {
+pub trait Agent<I: Clone, K>: Clone + Send + 'static {
     fn confirm(
         &self,
         _pk: K,
@@ -48,9 +49,9 @@ pub trait Agent<I, K>: Clone + Send + 'static {
         async { true }
     }
 
-    fn set_is_forwarding(
+    fn set_sessionbind_info(
         &self,
-        _is_forwarding: bool,
+        _session_bind_info: &SessionBindResult,
         _connection_info: &I,
     ) -> impl std::future::Future<Output = ()> + Send {
         async {}
@@ -67,7 +68,7 @@ where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     L: Stream<Item = tokio::io::Result<(S, I)>> + Unpin,
     A: Agent<I, K> + Send + Sync + 'static,
-    I: Send + Sync + 'static,
+    I: Clone + Send + Sync + 'static,
     K: SshKey + Send + Sync + Clone + 'static,
 {
     loop {
@@ -87,7 +88,7 @@ where
                         agent: Some(agent),
                         s: stream,
                         buf: CryptoVec::new(),
-                        connection_info: info,
+                        connection_info: info.clone(),
                     }
                     .run()
                     .await;
@@ -99,7 +100,7 @@ where
     Ok(())
 }
 
-struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I, K>, I, K> {
+struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I, K>, I: Clone, K> {
     keys: KeyStore<K>,
     agent: Option<A>,
     s: S,
@@ -110,7 +111,7 @@ struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I, K>, I,
 impl<
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
         A: Agent<I, K> + Send + Sync + 'static,
-        I,
+        I: Clone,
         K: SshKey + Send + Sync + Clone + 'static,
     > Connection<S, A, I, K>
 {
@@ -174,16 +175,22 @@ impl<
 
                 // https://raw.githubusercontent.com/openssh/openssh-portable/refs/heads/master/PROTOCOL.agent
                 if extension_name == "session-bind@openssh.com" {
-                    let _hostkey = r.read_string()?;
-                    let _session_identifier = r.read_string()?;
-                    let _signature = r.read_string()?;
-                    let is_forwarding = r.read_byte()? == 1;
-                    let agent = self.agent.take().ok_or(SSHAgentError::AgentFailure)?;
-                    agent
-                        .set_is_forwarding(is_forwarding, &self.connection_info)
-                        .await;
-                    self.agent = Some(agent);
-                    writebuf.push(msg::SUCCESS);
+                    if let Some(agent) = self.agent.as_mut() {
+                        if crate::session_bind::respond_extension_session_bind(
+                            agent,
+                            &mut r,
+                            self.connection_info.clone(),
+                        )
+                        .await
+                        .is_ok()
+                        {
+                            writebuf.push(msg::SUCCESS);
+                        } else {
+                            writebuf.push(msg::FAILURE);
+                        }
+                    } else {
+                        writebuf.push(msg::SUCCESS);
+                    }
                 } else {
                     writebuf.push(msg::FAILURE);
                 }
@@ -278,4 +285,6 @@ impl<
 pub enum SSHAgentError {
     #[error("Agent failure")]
     AgentFailure,
+    #[error("Signature verification failed")]
+    SignatureVerificationFailed,
 }
