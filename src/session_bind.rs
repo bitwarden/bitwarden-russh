@@ -7,8 +7,7 @@ use crate::{
 };
 use anyhow::Error;
 use rsa::{
-    sha2::{self, Digest},
-    signature, BigUint, Pkcs1v15Sign,
+    sha2::{self, Digest}, BigUint, Pkcs1v15Sign,
 };
 use russh_cryptovec::CryptoVec;
 use ssh_key::{
@@ -68,7 +67,7 @@ fn verify_rsa_signature(
             .verify(
                 Pkcs1v15Sign::new::<sha2::Sha256>(),
                 sha2::Sha256::digest(session_identifier).as_slice(),
-                &signature,
+                signature,
             )
             .map_err(Into::into)
     } else if alg == "rsa-sha2-512" {
@@ -76,7 +75,7 @@ fn verify_rsa_signature(
             .verify(
                 Pkcs1v15Sign::new::<sha2::Sha512>(),
                 sha2::Sha512::digest(session_identifier).as_slice(),
-                &signature,
+                signature,
             )
             .map_err(Into::into)
     } else {
