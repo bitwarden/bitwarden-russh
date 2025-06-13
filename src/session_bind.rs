@@ -110,13 +110,12 @@ fn verify_ecdsa_signature(
 }
 
 pub(crate) async fn respond_extension_session_bind<
-    'a,
     A: Agent<I, K> + Send + Sync + 'static,
     I: Clone,
     K,
 >(
     agent: &mut A,
-    r: &mut Position<'a>,
+    r: &mut Position<'_>,
     connection_info: I,
 ) -> Result<(), Error> {
     let hostkey_bytes = r.read_string()?;
