@@ -237,18 +237,15 @@ impl<
         match key.private_key() {
             Some(private_key) => {
                 writebuf.push(msg::SIGN_RESPONSE);
-                let sig = private_key
+                let signature = private_key
                     .try_sign(data)
                     .or(Err(SSHAgentError::AgentFailure));
-                let sig = match sig {
-                    Ok(sig) => sig,
-                    Err(_) => {
-                        writebuf.push(msg::FAILURE);
-                        return Ok((agent, false));
-                    }
+                let Ok(signature) = signature else {
+                    writebuf.push(msg::FAILURE);
+                    return Ok((agent, false));
                 };
 
-                let sig_name = match sig.algorithm() {
+                let signature_name = match signature.algorithm() {
                     ssh_key::Algorithm::Ed25519 => "ssh-ed25519",
                     ssh_key::Algorithm::Rsa { hash: None } => "ssh-rsa",
                     ssh_key::Algorithm::Rsa {
@@ -264,9 +261,11 @@ impl<
                     }
                 };
 
-                writebuf.push_u32_be(sig_name.len() as u32 + sig.as_bytes().len() as u32 + 8);
-                writebuf.extend_ssh_string(sig_name.as_bytes());
-                writebuf.extend_ssh_string(sig.as_bytes());
+                writebuf.push_u32_be(
+                    signature_name.len() as u32 + signature.as_bytes().len() as u32 + 8,
+                );
+                writebuf.extend_ssh_string(signature_name.as_bytes());
+                writebuf.extend_ssh_string(signature.as_bytes());
 
                 let len = writebuf.len();
                 BigEndian::write_u32(writebuf, (len - 4) as u32);
