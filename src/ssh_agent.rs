@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::marker::Sync;
+use std::result::Result;
 use std::sync::{Arc, RwLock};
 
-use crate::encoding::{Encoding, Position, Reader};
-use crate::session_bind::SessionBindResult;
+use anyhow::Error;
 use byteorder::{BigEndian, ByteOrder};
 use futures::stream::{Stream, StreamExt};
 use russh_cryptovec::CryptoVec;
@@ -12,11 +12,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 
-use crate::msg::{self, EXTENSION};
-use anyhow::Error;
-
 use super::msg::{REQUEST_IDENTITIES, SIGN_REQUEST};
-use std::result::Result;
+use crate::encoding::{Encoding, Position, Reader};
+use crate::msg::{self, EXTENSION};
+use crate::session_bind::SessionBindResult;
 
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]

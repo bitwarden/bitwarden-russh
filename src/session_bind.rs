@@ -1,22 +1,15 @@
 //! This file implements the SSH session-bind protocol.
 //! https://raw.githubusercontent.com/openssh/openssh-portable/refs/heads/master/PROTOCOL.agent
 
-use crate::{
-    encoding::{Position, Reader},
-    ssh_agent::Agent,
-};
 use anyhow::Error;
-use rsa::{
-    sha2::{self, Digest},
-    BigUint, Pkcs1v15Sign,
-};
+use rsa::sha2::{self, Digest};
+use rsa::{BigUint, Pkcs1v15Sign};
 use russh_cryptovec::CryptoVec;
-use ssh_key::{
-    public::{EcdsaPublicKey, Ed25519PublicKey, KeyData, RsaPublicKey},
-    EcdsaCurve,
-};
+use ssh_key::public::{EcdsaPublicKey, Ed25519PublicKey, KeyData, RsaPublicKey};
+use ssh_key::EcdsaCurve;
 
-use crate::ssh_agent::SSHAgentError;
+use crate::encoding::{Position, Reader};
+use crate::ssh_agent::{Agent, SSHAgentError};
 
 #[derive(Debug)]
 pub struct SessionBindInfo {

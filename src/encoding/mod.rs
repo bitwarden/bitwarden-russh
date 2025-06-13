@@ -13,10 +13,9 @@
 // limitations under the License.
 //
 
+use anyhow::Error;
 use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
 use russh_cryptovec::CryptoVec;
-
-use anyhow::Error;
 
 #[doc(hidden)]
 pub trait Bytes {
