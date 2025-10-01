@@ -1,3 +1,4 @@
+use signature::Signer;
 use std::collections::HashMap;
 use std::marker::Sync;
 use std::result::Result;
@@ -7,7 +8,9 @@ use anyhow::Error;
 use byteorder::{BigEndian, ByteOrder};
 use futures::stream::{Stream, StreamExt};
 use russh_cryptovec::CryptoVec;
-use ssh_key::{HashAlg, SigningKey};
+use ssh_key::{HashAlg, PrivateKey, Signature,SigningKey};
+use ssh_key::private::KeypairData;
+use ssh_key::public::KeyData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::select;
 use tokio_util::sync::CancellationToken;
@@ -24,7 +27,7 @@ pub struct KeyStore<Key>(pub Arc<RwLock<HashMap<Vec<u8>, Key>>>);
 pub trait SshKey {
     fn name(&self) -> &str;
     fn public_key_bytes(&self) -> Vec<u8>;
-    fn private_key(&self) -> Option<Box<dyn SigningKey>>;
+    fn private_key(&self) -> Option<Box<PrivateKey>>;
 }
 
 #[allow(missing_docs)]
@@ -40,11 +43,11 @@ pub trait Agent<I: Clone, K>: Clone + Send + 'static {
         _pk: K,
         _data: &[u8],
         _connection_info: &I,
-    ) -> impl std::future::Future<Output = bool> + Send {
+    ) -> impl std::future::Future<Output=bool> + Send {
         async { true }
     }
 
-    fn can_list(&self, _connection_info: &I) -> impl std::future::Future<Output = bool> + Send {
+    fn can_list(&self, _connection_info: &I) -> impl std::future::Future<Output=bool> + Send {
         async { true }
     }
 
@@ -52,7 +55,7 @@ pub trait Agent<I: Clone, K>: Clone + Send + 'static {
         &self,
         _session_bind_info: &SessionBindResult,
         _connection_info: &I,
-    ) -> impl std::future::Future<Output = ()> + Send {
+    ) -> impl std::future::Future<Output=()> + Send {
         async {}
     }
 }
@@ -65,7 +68,7 @@ pub async fn serve<S, L, A, I, K>(
 ) -> Result<(), Error>
 where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
-    L: Stream<Item = tokio::io::Result<(S, I)>> + Unpin,
+    L: Stream<Item=tokio::io::Result<(S, I)>> + Unpin,
     A: Agent<I, K> + Send + Sync + 'static,
     I: Clone + Send + Sync + 'static,
     K: SshKey + Send + Sync + Clone + 'static,
@@ -99,6 +102,25 @@ where
     Ok(())
 }
 
+//https://www.ietf.org/archive/id/draft-miller-ssh-agent-07.html#name-signature-flags-2
+// [PROTOCOL.agent] 5.3
+
+#[derive(Debug,PartialEq,Eq)]
+enum SignFlags {
+    Reserved = 1,
+    RsaSha256 = 2,
+    RsaSha512 = 4,
+}
+impl SignFlags {
+    fn get_hash_alg(&self) -> Option<HashAlg> {
+        match self {
+            SignFlags::RsaSha256 => Some(HashAlg::Sha256),
+            SignFlags::RsaSha512 => Some(HashAlg::Sha512),
+            _ => None,
+        }
+    }
+}
+
 struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I, K>, I: Clone, K> {
     keys: KeyStore<K>,
     agent: Option<A>,
@@ -108,11 +130,11 @@ struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent<I, K>, I:
 }
 
 impl<
-        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        A: Agent<I, K> + Send + Sync + 'static,
-        I: Clone,
-        K: SshKey + Send + Sync + Clone + 'static,
-    > Connection<S, A, I, K>
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    A: Agent<I, K> + Send + Sync + 'static,
+    I: Clone,
+    K: SshKey + Send + Sync + Clone + 'static,
+> Connection<S, A, I, K>
 {
     async fn run(mut self) -> Result<(), Error> {
         let mut writebuf = CryptoVec::new();
@@ -180,8 +202,8 @@ impl<
                             &mut r,
                             self.connection_info.clone(),
                         )
-                        .await
-                        .is_ok()
+                            .await
+                            .is_ok()
                         {
                             writebuf.push(msg::SUCCESS);
                         } else {
@@ -224,6 +246,18 @@ impl<
             return Ok((agent, false));
         }
 
+        let flags = r.read_u32()?;
+        let flags_enum = if flags == SignFlags::RsaSha256 as u32 {
+            SignFlags::RsaSha256
+        } else if flags == SignFlags::RsaSha512 as u32 {
+            SignFlags::RsaSha512
+        } else {
+            println!("Unsupported or no signing flags set");
+            writebuf.push(msg::FAILURE);
+            return Ok((agent, false));
+        };
+        println!("Signing flags: {:?}", flags_enum);
+
         let key = {
             let k = self.keys.0.read().or(Err(SSHAgentError::AgentFailure))?;
             if let Some(key) = k.get(blob) {
@@ -233,11 +267,17 @@ impl<
             }
         };
 
+
         match key.private_key() {
             Some(private_key) => {
                 writebuf.push(msg::SIGN_RESPONSE);
-                let signature = private_key
-                    .try_sign(data)
+                let result: Result<Signature,_> = if let KeypairData::Rsa(keypair) = private_key.key_data() {
+                    let alg = flags_enum.get_hash_alg();
+                    (keypair,alg).try_sign(data)
+                } else {
+                    private_key.try_sign(data)
+                };
+                let signature = result
                     .or(Err(SSHAgentError::AgentFailure));
                 let Ok(signature) = signature else {
                     writebuf.push(msg::FAILURE);
@@ -259,6 +299,7 @@ impl<
                         return Ok((agent, false));
                     }
                 };
+                println!("Signed with algorithm: {}", signature_name);
 
                 writebuf.push_u32_be(
                     signature_name.len() as u32 + signature.as_bytes().len() as u32 + 8,
