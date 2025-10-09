@@ -45,12 +45,12 @@ fn verify_rsa_signature(
     session_identifier: &[u8],
 ) -> Result<(), Error> {
     let n = key
-        .n
+        .n()
         .as_positive_bytes()
         .map(BigUint::from_bytes_be)
         .ok_or(anyhow::anyhow!("Failed to parse RSA modulus"))?;
     let e = key
-        .e
+        .e()
         .as_positive_bytes()
         .map(BigUint::from_bytes_be)
         .ok_or(anyhow::anyhow!("Failed to parse RSA exponent"))?;

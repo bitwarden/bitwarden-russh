@@ -107,6 +107,7 @@ where
 
 #[derive(Debug,PartialEq,Eq)]
 enum SignFlags {
+    Empty = 0,
     Reserved = 1,
     RsaSha256 = 2,
     RsaSha512 = 4,
@@ -116,6 +117,7 @@ impl SignFlags {
         match self {
             SignFlags::RsaSha256 => Some(HashAlg::Sha256),
             SignFlags::RsaSha512 => Some(HashAlg::Sha512),
+            SignFlags::Empty => Some(HashAlg::Sha256),
             _ => None,
         }
     }
@@ -251,8 +253,10 @@ impl<
             SignFlags::RsaSha256
         } else if flags == SignFlags::RsaSha512 as u32 {
             SignFlags::RsaSha512
+        } else if flags == SignFlags::Empty as u32 {
+            SignFlags::Empty
         } else {
-            println!("Unsupported or no signing flags set");
+            println!("Unsupported or no signing flags set: {flags:x}");
             writebuf.push(msg::FAILURE);
             return Ok((agent, false));
         };
