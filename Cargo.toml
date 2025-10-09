@@ -17,13 +17,15 @@ p521 = "0.13.3"
 rsa = { version = "0.9.6", features = ["sha2"] }
 russh-cryptovec = "0.7.3"
 ssh-encoding = "0.2.0"
+tracing = "=0.1.41"
+num_enum = "0.7.4"
 signature = "3.0.0-rc.4"
 
 # Latest version of both of these crates at the same time are not compatible
 inout = "=0.2.0-rc.6"
 block-padding = "=0.4.0-rc.4"
 
-ssh-key = { version = "0.7.0-rc.3", default-features = false, features = ["encryption", "ed25519", "rsa", "getrandom", "ecdsa"] }
+ssh-key = { version = "0.7.0-rc.3", default-features = false, features = ["encryption", "ed25519", "rsa", "getrandom", "ecdsa","sha1"] }
 thiserror = "1.0.63"
 tokio = { version = "1.40.0", features = ["io-util", "macros", "rt"] }
 tokio-util = "0.7.11"
