@@ -60,7 +60,7 @@ fn verify_rsa_signature(
         verifying_key
             .verify(
                 Pkcs1v15Sign::new::<sha2::Sha256>(),
-                sha2::Sha256::digest(session_identifier).as_slice(),
+                sha2::Sha256::digest(session_identifier).as_ref(),
                 signature,
             )
             .map_err(Into::into)
@@ -68,7 +68,7 @@ fn verify_rsa_signature(
         verifying_key
             .verify(
                 Pkcs1v15Sign::new::<sha2::Sha512>(),
-                sha2::Sha512::digest(session_identifier).as_slice(),
+                sha2::Sha512::digest(session_identifier).as_ref(),
                 signature,
             )
             .map_err(Into::into)
